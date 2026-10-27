@@ -3,7 +3,7 @@
  * includes and assets are loaded from the same release as app.js itself.
  */
 const SCRIPT_BASE_URL = document.currentScript?.src?.replace(/[^/]*$/, '')
-    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.1/public/';
+    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.2/public/';
 
 const SHORTLINK_URL = 'https://tmmqlcutmymtakyhsqyf.supabase.co/functions/v1/destag-shortlink';
 
@@ -513,23 +513,26 @@ class WebflowApp {
 
         if (!copyBtn || !urlField) return;
 
+        // Only swap the label text, so an icon inside the button survives.
+        const label = copyBtn.querySelector('[data-copy-label]') ?? copyBtn;
+
         copyBtn.addEventListener('click', async (e) => {
             e.preventDefault();
             if (!urlField.value || urlField.value === LINK_PLACEHOLDER) return;
 
             try {
                 await navigator.clipboard.writeText(urlField.value);
-                const originalTxt = copyBtn.textContent;
-                copyBtn.textContent = 'Link erfolgreich kopiert!';
+                const originalTxt = label.textContent;
+                label.textContent = 'Link erfolgreich kopiert!';
                 copyBtn.style.pointerEvents = 'none';
 
                 setTimeout(() => {
-                    copyBtn.textContent = originalTxt;
+                    label.textContent = originalTxt;
                     copyBtn.style.pointerEvents = 'auto';
                 }, 3000);
             } catch (err) {
                 console.error('Clipboard write failed:', err);
-                copyBtn.textContent = 'Es ist ein Fehler aufgetreten.';
+                label.textContent = 'Es ist ein Fehler aufgetreten.';
             }
         });
     }
