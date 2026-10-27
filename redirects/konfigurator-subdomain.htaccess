@@ -1,0 +1,22 @@
+# 301-Weiterleitungen: alter WordPress-Konfigurator -> neuer Webflow-Konfigurator
+# Einsatzort: DocumentRoot von konfigurator.destag-grabmale.de (ersetzt die WordPress-.htaccess).
+# Konfigurations-Parameter (?m...&a...&q=...) werden automatisch an das Ziel angehängt.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Konfiguratoren (Query-String bleibt erhalten)
+    RewriteRule ^einzelgraeber-3d-konfigurator/?$ https://www.destag-grabmale.de/konfigurator/einzelgraeber-3d-konfigurator [R=301,L]
+    RewriteRule ^familiengraeber-konfigurator/?$ https://www.destag-grabmale.de/konfigurator/familiengrab-3d-konfigurieren [R=301,L]
+    RewriteRule ^urnengraeber/?$ https://www.destag-grabmale.de/konfigurator/urnengraber-3d-konfigurieren [R=301,L]
+
+    # Inhaltsseiten (Query-String wird verworfen)
+    RewriteRule ^urnengraeber-uebersicht/?$ https://www.destag-grabmale.de/produkte/urnengraber?3d_equal=ja [R=301,L]
+    RewriteRule ^(anleitung-grabsteinkonfigurator|anleitung)/?$ https://www.destag-grabmale.de/konfigurator/anleitung [R=301,L,QSD]
+    RewriteRule ^steinmetzsuche/?$ https://www.destag-grabmale.de/handlersuche [R=301,L,QSD]
+    RewriteRule ^impressum/?$ https://www.destag-grabmale.de/footer/rechtliches/impressum [R=301,L,QSD]
+    RewriteRule ^datenschutz/?$ https://www.destag-grabmale.de/footer/rechtliches/datenschutz [R=301,L,QSD]
+
+    # Startseite, /konfigurator-starten/ und alles Übrige
+    RewriteRule ^ https://www.destag-grabmale.de/konfigurator [R=301,L,QSD]
+</IfModule>

@@ -1,0 +1,5 @@
+# Server-seitige Altlasten (All-Inkl), enthalten u. a. den Bitly-Token
+services/
+public/services.php
+/.htaccess
+.DS_Store

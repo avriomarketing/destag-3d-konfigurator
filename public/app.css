@@ -1,0 +1,75 @@
+.expivi .price {
+    display: none;
+}
+
+#viewerContainer {
+    height: 600px;
+}
+
+.expivi h4 {
+    color: rgba(0, 0, 0, 0.6);
+    font-size: 16px;
+    font-weight: 400;
+    font-family: "Didact-Gothic", Arial, sans-serif;
+}
+
+.expivi .inline-items-container .thumbnail-item,
+.expivi .inline-items-container .thumbnail-item .v-image,
+.expivi .inline-items-container .thumbnail-item .v-image__image {
+    width: 125px !important;
+    height: 125px !important;
+}
+
+.v-card:not(.v-sheet--tile),
+.v-responsive, .color-tile {
+    border-radius: 0 !important;
+}
+
+.active-tile {
+    width: 100% !important;
+    height: 100% !important;
+    border: 3px solid #ffffff !important;
+    box-sizing: border-box !important;
+    box-shadow: 0 1px 5px 2px rgba(0, 0, 0, 0.8) !important;
+}
+
+.v-expansion-panel:before {
+    box-shadow: none !important;
+}
+
+.xpv__viewer_toolbar_container {
+    left: -7px !important;
+}
+
+#textfieldUrl {
+    background-color: #2a2a2a;
+    padding: 1.02rem;
+    text-align: center;
+    border-radius: 15px 15px 0 0;
+    border: none;
+    outline: none;
+    box-shadow: none;
+}
+
+#configLoader {
+    position: absolute;
+    top: 200px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    transition: opacity 0.4s ease-out;
+}
+
+.expivi-spinner {
+    width: 40px;
+    height: 40px;
+    border: 4px solid rgba(0, 0, 0, 0.1);
+    border-left-color: #333;
+    border-radius: 50%;
+    animation: expivi-spin 1s linear infinite;
+}
+
+@keyframes expivi-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
