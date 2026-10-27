@@ -3,11 +3,20 @@
  * includes and assets are loaded from the same release as app.js itself.
  */
 const SCRIPT_BASE_URL = document.currentScript?.src?.replace(/[^/]*$/, '')
-    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.0/public/';
+    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.1/public/';
 
 const SHORTLINK_URL = 'https://tmmqlcutmymtakyhsqyf.supabase.co/functions/v1/destag-shortlink';
 
 const LINK_PLACEHOLDER = 'Link wird generiert...';
+
+/**
+ * Resolves with the given promise, or after `ms` at the latest, so that a
+ * hanging Expivi call never blocks revealing the configurator.
+ * @param {Promise<*>} promise
+ * @param {number} ms
+ * @returns {Promise<*>}
+ */
+const withTimeout = (promise, ms) => Promise.race([promise, new Promise(resolve => setTimeout(resolve, ms))]);
 
 /**
  * Webflow integration for Expivi 3D Configurator and Destag features.
@@ -140,7 +149,8 @@ class WebflowApp {
             if (isActivated) return;
             isActivated = true;
 
-            this.setConfigurationFromUrl();
+            await withTimeout(this.setConfigurationFromUrl(), 2000);
+            await withTimeout(this.renderTextAttributes(), 4000);
 
             await this.setupDynamicHeadline();
 
@@ -176,11 +186,14 @@ class WebflowApp {
 
     /**
      * Applies configuration parameters from URL to the Expivi instance.
+     * @returns {Promise<Array>} Settles once all parameters have been applied.
      */
     setConfigurationFromUrl() {
         const params = Object.fromEntries(new URLSearchParams(window.location.search));
         delete params.q;
         delete params.p;
+
+        const pending = [];
 
         for (const [key, val] of Object.entries(params)) {
             if (!val || val === 'undefined' || val === 'null') continue;
@@ -193,10 +206,67 @@ class WebflowApp {
                 } else if (key.startsWith('a')) {
                     result = window.expivi.setProductAttribute(id, val);
                 }
-                Promise.resolve(result).catch(err => console.warn(`Parameter ${key} ignored:`, err));
+                pending.push(Promise.resolve(result).catch(err => console.warn(`Parameter ${key} ignored:`, err)));
             } catch (err) {
                 console.warn(`Parameter ${key} ignored:`, err);
             }
+        }
+
+        return Promise.allSettled(pending);
+    }
+
+    /**
+     * Expivi renders inscriptions (text_to_image attributes) only once their
+     * option step has been opened, because the Vuetify expansion panels mount
+     * their content lazily. Until then the model shows blank plates.
+     * Opens and closes each affected step once, then restores the panels
+     * that were open before.
+     * @returns {Promise<void>}
+     */
+    async renderTextAttributes() {
+        try {
+            const attributes = await window.expivi.getProductAttributes();
+            const stepIds = [...new Set((attributes ?? [])
+                .filter(attr => attr.type === 'text_to_image')
+                .map(attr => attr.parent_id))];
+
+            if (!stepIds.length) return;
+
+            const waitFor = async (check, ms = 3000) => {
+                const start = performance.now();
+                while (performance.now() - start < ms) {
+                    const result = check();
+                    if (result) return result;
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+                return null;
+            };
+
+            const panels = (await Promise.all(stepIds.map(id =>
+                waitFor(() => document.getElementById(`expansion_panel_view_${id}`))
+            ))).filter(panel => panel && !panel.querySelector('.v-expansion-panel-content'));
+
+            if (!panels.length) return;
+
+            const openPanels = [...document.querySelectorAll('.v-expansion-panel--active')];
+
+            for (const panel of panels) {
+                const header = panel.querySelector('.v-expansion-panel-header');
+                if (!header) continue;
+
+                header.click();
+                await waitFor(() => panel.querySelector('.v-expansion-panel-content'));
+                await new Promise(resolve => requestAnimationFrame(resolve));
+                header.click();
+            }
+
+            for (const panel of openPanels) {
+                if (!panel.classList.contains('v-expansion-panel--active')) {
+                    panel.querySelector('.v-expansion-panel-header')?.click();
+                }
+            }
+        } catch (err) {
+            console.warn('Inschriften konnten nicht vorab gerendert werden:', err);
         }
     }
 
