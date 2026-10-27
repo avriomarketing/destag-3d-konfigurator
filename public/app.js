@@ -3,7 +3,7 @@
  * includes and assets are loaded from the same release as app.js itself.
  */
 const SCRIPT_BASE_URL = document.currentScript?.src?.replace(/[^/]*$/, '')
-    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.2/public/';
+    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.3/public/';
 
 const SHORTLINK_URL = 'https://tmmqlcutmymtakyhsqyf.supabase.co/functions/v1/destag-shortlink';
 
@@ -373,12 +373,17 @@ class WebflowApp {
     async initTypeform(shortUrl, container, formId) {
         if (!container) return;
 
+        // Optional "loading" message behind the embed, hidden once Typeform is ready.
+        const loaders = document.querySelectorAll(`[data-form-loading="${formId}"]`);
+        loaders.forEach(el => { el.style.display = ''; });
+
         container.innerHTML = '';
         window.tf.createWidget(formId, {
             container: container,
             hidden: { config_link: shortUrl },
             width: '100%',
-            height: '100%'
+            height: '100%',
+            onReady: () => loaders.forEach(el => { el.style.display = 'none'; })
         });
     }
 
