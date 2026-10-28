@@ -3,9 +3,11 @@
  * includes and assets are loaded from the same release as app.js itself.
  */
 const SCRIPT_BASE_URL = document.currentScript?.src?.replace(/[^/]*$/, '')
-    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.6/public/';
+    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.7/public/';
 
-const SHORTLINK_URL = 'https://tmmqlcutmymtakyhsqyf.supabase.co/functions/v1/destag-shortlink';
+/** Edge Functions im Supabase-Projekt avrio-services. */
+const SHORTLINK_URL = 'https://sxaflpiqtgwfzkybmwzn.supabase.co/functions/v1/destag-shortlink';
+const PDF_SERVICE_URL = 'https://sxaflpiqtgwfzkybmwzn.supabase.co/functions/v1/destag-pdf';
 
 const LINK_PLACEHOLDER = 'Link wird generiert...';
 
@@ -47,6 +49,7 @@ class WebflowApp {
             appBaseUrl: config.appBaseUrl ?? (window.location.origin + cleanPath),
             cdnBaseUrl: config.cdnBaseUrl ?? SCRIPT_BASE_URL,
             shortlinkUrl: config.shortlinkUrl ?? SHORTLINK_URL,
+            pdfServiceUrl: config.pdfServiceUrl ?? PDF_SERVICE_URL,
             ...config
         };
 
@@ -446,9 +449,10 @@ class WebflowApp {
      * @param {string} shortUrl - Configured routing shortlink parameters.
      * @param {HTMLElement} container - Selected node attachment context.
      * @param {string} formId - Target service configuration string.
+     * @param {string} [pdfLink] - Link to the uploaded configuration PDF.
      * @returns {Promise<void>}
      */
-    async initTypeform(shortUrl, container, formId) {
+    async initTypeform(shortUrl, container, formId, pdfLink = '') {
         if (!container) return;
 
         // Optional "loading" message behind the embed, hidden once Typeform is ready.
@@ -458,11 +462,33 @@ class WebflowApp {
         container.innerHTML = '';
         window.tf.createWidget(formId, {
             container: container,
-            hidden: { config_link: shortUrl },
+            hidden: pdfLink ? { config_link: shortUrl, config_pdf: pdfLink } : { config_link: shortUrl },
             width: '100%',
             height: '100%',
             onReady: () => loaders.forEach(el => { el.style.display = 'none'; })
         });
+    }
+
+    /**
+     * Announces a link to the configuration PDF right away and uploads the PDF in the
+     * background, so the Typeform request can carry the link without waiting.
+     * @param {Object} expiviData - Data bundle from getFeatureData.
+     * @param {string} shortUrl - The configuration shortlink printed into the PDF.
+     * @returns {string} The PDF link, or '' if uploading is not possible.
+     */
+    preparePdfLink(expiviData, shortUrl) {
+        if (!this.cfg.pdfServiceUrl || !window.crypto?.randomUUID) return '';
+
+        const id = window.crypto.randomUUID();
+        (async () => {
+            await this.loadJS(`${this.cfg.cdnBaseUrl}assets/dist/pdf-lib.min.js`);
+            await this.loadJS(`${this.cfg.cdnBaseUrl}includes/generate-pdf.js`);
+            const pdfBytes = await window.DestagPDF.build(expiviData, shortUrl);
+            const stored = await window.DestagPDF.upload(pdfBytes, this.cfg.pdfServiceUrl, id);
+            if (!stored) console.error('PDF für die Anfrage konnte nicht gespeichert werden.');
+        })().catch(err => console.error('PDF für die Anfrage fehlgeschlagen:', err));
+
+        return `${this.cfg.pdfServiceUrl}?id=${id}`;
     }
 
     /**
@@ -484,8 +510,9 @@ class WebflowApp {
                 btn.innerText = 'Wird generiert...';
 
                 try {
-                    const { shortUrl } = await this.getFeatureData(false);
-                    this.initTypeform(shortUrl, container, formId);
+                    const { expiviData, shortUrl } = await this.getFeatureData(false);
+                    const pdfLink = this.preparePdfLink(expiviData, shortUrl);
+                    this.initTypeform(shortUrl, container, formId, pdfLink);
                 } catch (err) {
                     console.error('Typeform initialization failed:', err);
                 } finally {
