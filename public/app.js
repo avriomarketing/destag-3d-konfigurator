@@ -3,7 +3,7 @@
  * includes and assets are loaded from the same release as app.js itself.
  */
 const SCRIPT_BASE_URL = document.currentScript?.src?.replace(/[^/]*$/, '')
-    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.4/public/';
+    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.5/public/';
 
 const SHORTLINK_URL = 'https://tmmqlcutmymtakyhsqyf.supabase.co/functions/v1/destag-shortlink';
 
@@ -265,6 +265,7 @@ class WebflowApp {
                 }
             }
 
+            await this.waitForSceneLoaded();
             await this.reapplyTextAttributes(textAttributes.map(attr => String(attr.id)));
         } catch (err) {
             console.warn('Inschriften konnten nicht vorab gerendert werden:', err);
@@ -272,9 +273,41 @@ class WebflowApp {
     }
 
     /**
+     * Resolves once Expivi has reported the product as ready (onReady is a
+     * replay subject, so a late subscription still fires) and no further
+     * assets such as meshes or textures have been requested for a second.
+     * @param {number} [maxMs=15000] - Upper bound, so it never hangs.
+     * @returns {Promise<void>}
+     */
+    async waitForSceneLoaded(maxMs = 15000) {
+        const start = performance.now();
+        const onReady = window.expivi?._events?.onReady;
+
+        if (typeof onReady?.subscribe === 'function') {
+            await withTimeout(new Promise(resolve => {
+                const sub = onReady.subscribe(() => {
+                    resolve();
+                    setTimeout(() => sub.unsubscribe());
+                });
+            }), maxMs);
+        }
+
+        let lastRequest = performance.now();
+        const observer = new PerformanceObserver(() => { lastRequest = performance.now(); });
+        observer.observe({ type: 'resource' });
+
+        while (performance.now() - lastRequest < 1000 && performance.now() - start < maxMs) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        observer.disconnect();
+    }
+
+    /**
      * Sets the inscriptions from the URL a second time. Expivi only draws a
      * text_to_image attribute when its value is set after the step has been
-     * mounted; values applied earlier stay blank plates.
+     * mounted and the scene has finished loading; values applied earlier stay
+     * blank plates.
      * @param {string[]} textIds - Ids of the text_to_image attributes.
      * @returns {Promise<Array>} Settles once all inscriptions have been set.
      */
