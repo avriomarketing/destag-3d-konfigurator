@@ -3,7 +3,7 @@
  * includes and assets are loaded from the same release as app.js itself.
  */
 const SCRIPT_BASE_URL = document.currentScript?.src?.replace(/[^/]*$/, '')
-    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.7/public/';
+    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.8/public/';
 
 /** Edge Functions im Supabase-Projekt avrio-services. */
 const SHORTLINK_URL = 'https://sxaflpiqtgwfzkybmwzn.supabase.co/functions/v1/destag-shortlink';
