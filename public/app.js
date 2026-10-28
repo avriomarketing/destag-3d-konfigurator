@@ -3,7 +3,7 @@
  * includes and assets are loaded from the same release as app.js itself.
  */
 const SCRIPT_BASE_URL = document.currentScript?.src?.replace(/[^/]*$/, '')
-    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.5/public/';
+    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.6/public/';
 
 const SHORTLINK_URL = 'https://tmmqlcutmymtakyhsqyf.supabase.co/functions/v1/destag-shortlink';
 
@@ -137,42 +137,31 @@ class WebflowApp {
     }
 
     /**
-     * Registers reactive lifecycle hooks to toggle component visibility and data sets.
-     * Guarantees that the loader remains visible until the dynamic headline is fully resolved.
-     * Implements a flat async architecture and optional chaining for DOM safety.
+     * Keeps the loader visible until the scene has loaded, the configuration
+     * from the URL has been applied and verified and the dynamic headline is
+     * resolved. Applying earlier lets Expivi overwrite the values with the
+     * product defaults.
      */
-    setupLoaderAndConfigActivation() {
+    async setupLoaderAndConfigActivation() {
         const expiviContainer = document.querySelector('.expivi');
-        let isActivated = false;
 
-        const activateConfigurator = async () => {
-            if (isActivated) return;
-            isActivated = true;
+        await this.waitForSceneLoaded();
+        await withTimeout(this.setConfigurationFromUrl(), 4000);
+        await withTimeout(this.reapplyMissingConfiguration(), 4000);
+        await withTimeout(this.renderTextAttributes(), 4000);
 
-            await withTimeout(this.setConfigurationFromUrl(), 2000);
-            await withTimeout(this.renderTextAttributes(), 4000);
+        await this.setupDynamicHeadline();
 
-            await this.setupDynamicHeadline();
+        await new Promise(resolve => setTimeout(resolve, 600));
 
-            await new Promise(resolve => setTimeout(resolve, 600));
-
-            if (this.loaderEl) {
-                this.loaderEl.style.opacity = '0';
-                setTimeout(() => this.loaderEl?.remove(), 400);
-            }
-
-            if (expiviContainer) {
-                expiviContainer.style.opacity = '1';
-            }
-        };
-
-        const hasExpiviEvent = window.expivi && typeof window.expivi.on === 'function';
-
-        if (hasExpiviEvent) {
-            window.expivi.on('onViewerReady', activateConfigurator);
+        if (this.loaderEl) {
+            this.loaderEl.style.opacity = '0';
+            setTimeout(() => this.loaderEl?.remove(), 400);
         }
 
-        setTimeout(activateConfigurator, hasExpiviEvent ? 6000 : 2500);
+        if (expiviContainer) {
+            expiviContainer.style.opacity = '1';
+        }
     }
 
     /**
@@ -209,6 +198,38 @@ class WebflowApp {
                 pending.push(Promise.resolve(result).catch(err => console.warn(`Parameter ${key} ignored:`, err)));
             } catch (err) {
                 console.warn(`Parameter ${key} ignored:`, err);
+            }
+        }
+
+        return Promise.allSettled(pending);
+    }
+
+    /**
+     * Reads back every material and option from the URL and sets the ones
+     * Expivi did not take over a second time. Inscriptions are handled by
+     * renderTextAttributes().
+     * @returns {Promise<Array>} Settles once all corrections have been applied.
+     */
+    async reapplyMissingConfiguration() {
+        const pending = [];
+
+        for (const [key, val] of new URLSearchParams(window.location.search)) {
+            if (!/^[ma]\d+$/.test(key) || !val || val === 'undefined' || val === 'null') continue;
+
+            const id = key.substring(1);
+            try {
+                if (key.startsWith('m')) {
+                    if (String(await window.expivi.getActiveMaterial(id)) !== val) {
+                        pending.push(Promise.resolve(window.expivi.setActiveMaterial(id, val)));
+                    }
+                } else if (/^\d+$/.test(val)) {
+                    const attr = await window.expivi.getAttributeById(id);
+                    if (String(attr?.selected_value_id) !== val) {
+                        pending.push(Promise.resolve(window.expivi.setProductAttribute(id, val)));
+                    }
+                }
+            } catch (err) {
+                console.warn(`Parameter ${key} not verified:`, err);
             }
         }
 
@@ -265,7 +286,6 @@ class WebflowApp {
                 }
             }
 
-            await this.waitForSceneLoaded();
             await this.reapplyTextAttributes(textAttributes.map(attr => String(attr.id)));
         } catch (err) {
             console.warn('Inschriften konnten nicht vorab gerendert werden:', err);
@@ -281,7 +301,12 @@ class WebflowApp {
      */
     async waitForSceneLoaded(maxMs = 15000) {
         const start = performance.now();
-        const onReady = window.expivi?._events?.onReady;
+        let onReady = window.expivi?._events?.onReady;
+
+        while (typeof onReady?.subscribe !== 'function' && performance.now() - start < maxMs) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            onReady = window.expivi?._events?.onReady;
+        }
 
         if (typeof onReady?.subscribe === 'function') {
             await withTimeout(new Promise(resolve => {
