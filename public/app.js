@@ -3,7 +3,7 @@
  * includes and assets are loaded from the same release as app.js itself.
  */
 const SCRIPT_BASE_URL = document.currentScript?.src?.replace(/[^/]*$/, '')
-    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.3/public/';
+    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.4/public/';
 
 const SHORTLINK_URL = 'https://tmmqlcutmymtakyhsqyf.supabase.co/functions/v1/destag-shortlink';
 
@@ -220,15 +220,14 @@ class WebflowApp {
      * option step has been opened, because the Vuetify expansion panels mount
      * their content lazily. Until then the model shows blank plates.
      * Opens and closes each affected step once, then restores the panels
-     * that were open before.
+     * that were open before and sets the inscriptions from the URL again.
      * @returns {Promise<void>}
      */
     async renderTextAttributes() {
         try {
             const attributes = await window.expivi.getProductAttributes();
-            const stepIds = [...new Set((attributes ?? [])
-                .filter(attr => attr.type === 'text_to_image')
-                .map(attr => attr.parent_id))];
+            const textAttributes = (attributes ?? []).filter(attr => attr.type === 'text_to_image');
+            const stepIds = [...new Set(textAttributes.map(attr => attr.parent_id))];
 
             if (!stepIds.length) return;
 
@@ -246,28 +245,49 @@ class WebflowApp {
                 waitFor(() => document.getElementById(`expansion_panel_view_${id}`))
             ))).filter(panel => panel && !panel.querySelector('.v-expansion-panel-content'));
 
-            if (!panels.length) return;
+            if (panels.length) {
+                const openPanels = [...document.querySelectorAll('.v-expansion-panel--active')];
 
-            const openPanels = [...document.querySelectorAll('.v-expansion-panel--active')];
+                for (const panel of panels) {
+                    const header = panel.querySelector('.v-expansion-panel-header');
+                    if (!header) continue;
 
-            for (const panel of panels) {
-                const header = panel.querySelector('.v-expansion-panel-header');
-                if (!header) continue;
+                    header.click();
+                    await waitFor(() => panel.querySelector('.v-expansion-panel-content'));
+                    await new Promise(resolve => requestAnimationFrame(resolve));
+                    header.click();
+                }
 
-                header.click();
-                await waitFor(() => panel.querySelector('.v-expansion-panel-content'));
-                await new Promise(resolve => requestAnimationFrame(resolve));
-                header.click();
-            }
-
-            for (const panel of openPanels) {
-                if (!panel.classList.contains('v-expansion-panel--active')) {
-                    panel.querySelector('.v-expansion-panel-header')?.click();
+                for (const panel of openPanels) {
+                    if (!panel.classList.contains('v-expansion-panel--active')) {
+                        panel.querySelector('.v-expansion-panel-header')?.click();
+                    }
                 }
             }
+
+            await this.reapplyTextAttributes(textAttributes.map(attr => String(attr.id)));
         } catch (err) {
             console.warn('Inschriften konnten nicht vorab gerendert werden:', err);
         }
+    }
+
+    /**
+     * Sets the inscriptions from the URL a second time. Expivi only draws a
+     * text_to_image attribute when its value is set after the step has been
+     * mounted; values applied earlier stay blank plates.
+     * @param {string[]} textIds - Ids of the text_to_image attributes.
+     * @returns {Promise<Array>} Settles once all inscriptions have been set.
+     */
+    reapplyTextAttributes(textIds) {
+        const params = new URLSearchParams(window.location.search);
+
+        const pending = textIds
+            .map(id => [id, params.get(`a${id}`)])
+            .filter(([, val]) => val && val !== 'undefined' && val !== 'null')
+            .map(([id, val]) => Promise.resolve(window.expivi.setProductAttribute(id, val))
+                .catch(err => console.warn(`Inschrift a${id} ignored:`, err)));
+
+        return Promise.allSettled(pending);
     }
 
     /**
