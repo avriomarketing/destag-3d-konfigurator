@@ -92,7 +92,7 @@ window.DestagData = (() => {
 
             const camera = await window.expivi.getActiveCamera();
             const fov = (Number(camera?.properties?.fov) || 45) * Math.PI / 180;
-            const distance = radius / Math.sin(fov / 2) * 0.9;
+            const distance = radius / Math.sin(fov / 2);
 
             return {
                 center,
