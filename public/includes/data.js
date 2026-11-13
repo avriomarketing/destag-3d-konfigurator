@@ -33,27 +33,92 @@ window.DestagData = (() => {
 
     return {
         /**
-         * Screenshot of the grave for the PDF (1200 x 1200 JPEG).
-         * Expivi's default screenshot camera frames the whole scene (frameScene),
-         * which currently renders the grave tiny and from far away. Rendering from
-         * the pose of the scene camera gives the usual, filling view. Falls back to
-         * the default screenshot if the camera cannot be read.
+         * Camera pose that frames the grave itself, seen from the direction the
+         * visitor is currently looking from.
+         * Expivi frames the camera on the bounding box of the whole product. The
+         * products contain a flat ground plane of 5 x 5 m, so that framing shows
+         * the grave tiny. Here flat parts much wider than the grave are left out.
+         * @returns {Promise<Object|null>} { center, position, direction } as [x, y, z], or null.
+         */
+        async fitPose() {
+            const [root] = (await window.expivi.resolveProductNodes()) ?? [];
+            if (!root) return null;
+
+            const childrenOf = node => node.children ?? node.mChildren
+                ?? (typeof node.getChildren === 'function' ? node.getChildren() : null) ?? [];
+            const boxes = [];
+            const collect = node => {
+                const children = childrenOf(node);
+                if (!children.length) {
+                    const box = node.getBoundingBox?.(true);
+                    if (box && !box.isEmpty?.()) boxes.push(box);
+                }
+                children.forEach(collect);
+            };
+            collect(root);
+
+            const union = list => list.reduce((acc, b) => ({
+                min: [Math.min(acc.min[0], b.min.x), Math.min(acc.min[1], b.min.y), Math.min(acc.min[2], b.min.z)],
+                max: [Math.max(acc.max[0], b.max.x), Math.max(acc.max[1], b.max.y), Math.max(acc.max[2], b.max.z)]
+            }), { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] });
+            const height = b => b.max.y - b.min.y;
+            const width = b => Math.max(b.max.x - b.min.x, b.max.z - b.min.z);
+
+            const solid = boxes.filter(b => height(b) > 1);
+            if (!solid.length) return null;
+            const core = union(solid);
+            const coreWidth = Math.max(core.max[0] - core.min[0], core.max[2] - core.min[2]);
+            const grave = union(boxes.filter(b => height(b) > 1 || width(b) <= coreWidth * 1.5));
+
+            const center = grave.min.map((v, i) => (v + grave.max[i]) / 2);
+            const radius = Math.hypot(...grave.max.map((v, i) => v - grave.min[i])) / 2;
+            if (![...center, radius].every(Number.isFinite) || radius <= 0) return null;
+
+            // Direction from the grave to the camera, at least 15° from above.
+            const live = await window.expivi.getCameraTransform();
+            let direction = [live.position.x - center[0], live.position.y - center[1], live.position.z - center[2]];
+            let length = Math.hypot(...direction);
+            if (!Number.isFinite(length) || length === 0) direction = [0.55, 0.36, 0.75];
+            else direction = direction.map(v => v / length);
+
+            const minUp = Math.sin(15 * Math.PI / 180);
+            if (direction[1] < minUp) {
+                const flat = Math.hypot(direction[0], direction[2]) || 1;
+                const scale = Math.cos(15 * Math.PI / 180) / flat;
+                direction = [direction[0] * scale, minUp, direction[2] * scale];
+            }
+            length = Math.hypot(...direction);
+            direction = direction.map(v => v / length);
+
+            const camera = await window.expivi.getActiveCamera();
+            const fov = (Number(camera?.properties?.fov) || 45) * Math.PI / 180;
+            const distance = radius / Math.sin(fov / 2) * 0.9;
+
+            return {
+                center,
+                position: center.map((v, i) => v + direction[i] * distance),
+                direction
+            };
+        },
+
+        /**
+         * Screenshot of the grave for the PDF (1200 x 1200 JPEG), framed on the
+         * grave itself (see fitPose). Expivi restores the visitor's view afterwards.
+         * Falls back to Expivi's default screenshot if the grave cannot be measured.
          * @returns {Promise<string>} Image data URL.
          */
         async takeScreenshot() {
             try {
-                const cam = await window.expivi.getActiveCamera();
-                const position = [cam?.position_x, cam?.position_y, cam?.position_z].map(Number);
-                const quaternion = [cam?.quaternion_x, cam?.quaternion_y, cam?.quaternion_z, cam?.quaternion_w].map(Number);
-
-                if ([...position, ...quaternion].every(Number.isFinite)) {
+                const pose = await this.fitPose();
+                if (pose) {
                     const shot = await window.expivi.getScreenshot(
-                        1200, 1200, 'CUSTOM_CAMERA_POSITION', 'image/jpeg', { position, quaternion }
+                        1200, 1200, 'CUSTOM_CAMERA_POSITION', 'image/jpeg',
+                        { position: pose.position, direction: pose.direction }
                     );
                     if (typeof shot === 'string' && shot.startsWith('data:image/')) return shot;
                 }
             } catch (err) {
-                console.warn('Screenshot aus der Kameraposition nicht möglich:', err);
+                console.warn('Screenshot mit eingepasster Kamera nicht möglich:', err);
             }
 
             return window.expivi.getScreenshot(1200, 1200);

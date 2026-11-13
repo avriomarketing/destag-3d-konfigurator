@@ -175,6 +175,7 @@ class WebflowApp {
         await withTimeout(this.renderTextAttributes(), 4000);
 
         await this.setupDynamicHeadline();
+        await this.centerModelIfTooFar();
 
         await new Promise(resolve => setTimeout(resolve, 600));
 
@@ -516,8 +517,47 @@ class WebflowApp {
      */
     setupCenterModel() {
         document.getElementById('centerModel')?.addEventListener('click', () => {
-            window.expivi.getScreenshot().catch(console.error);
+            this.centerModel().catch(err => console.warn('Modell konnte nicht zentriert werden:', err));
         });
+    }
+
+    /**
+     * Frames the camera on the grave itself, from the current viewing angle.
+     * (Expivi's own framing includes a 5 x 5 m ground plane and shows the grave tiny.)
+     * @returns {Promise<void>}
+     */
+    async centerModel() {
+        await this.loadFeatureScripts();
+        const pose = await window.DestagData.fitPose();
+        if (!pose) throw new Error('Grab nicht messbar');
+
+        const [x, y, z] = pose.position;
+        const [cx, cy, cz] = pose.center;
+        await window.expivi.setCameraTransform({ position: { x, y, z } }, { x: cx, y: cy, z: cz });
+    }
+
+    /**
+     * Some products start with the camera far away from the grave (e.g. the urn
+     * graves at about 10 m), so the grave appears tiny. Frames the grave in that
+     * case; views that already show the grave well stay untouched.
+     * @returns {Promise<void>}
+     */
+    async centerModelIfTooFar() {
+        try {
+            await this.loadFeatureScripts();
+            const pose = await window.DestagData.fitPose();
+            if (!pose) return;
+
+            const live = await window.expivi.getCameraTransform();
+            const liveDistance = Math.hypot(
+                live.position.x - pose.center[0], live.position.y - pose.center[1], live.position.z - pose.center[2]
+            );
+            const fitDistance = Math.hypot(...pose.position.map((v, i) => v - pose.center[i]));
+
+            if (liveDistance > fitDistance * 1.8) await this.centerModel();
+        } catch (err) {
+            console.warn('Startansicht nicht geprüft:', err);
+        }
     }
 
     /**
