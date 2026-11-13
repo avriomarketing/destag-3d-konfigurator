@@ -138,15 +138,19 @@ window.DestagData = (() => {
             try {
                 const id = cfg.catalogueId ?? cfg.product;
 
-                const [rawAttrs, savedConfig, materialGroups, screenshot, catalogJson] = await Promise.all([
+                // saveConfiguration() would render its own thumbnail with Expivi's
+                // default camera. Running that alongside the PDF screenshot lets Expivi
+                // restore the wrong view afterwards, so the viewer jumps far away.
+                // A size of 0 x 0 skips the thumbnail; the screenshot runs on its own.
+                const [rawAttrs, savedConfig, materialGroups, catalogJson] = await Promise.all([
                     window.expivi.getProductAttributes(),
-                    window.expivi.saveConfiguration(),
+                    window.expivi.saveConfiguration(0, 0),
                     window.expivi.managers.resolveMaterialGroups(),
-                    this.takeScreenshot(),
                     fetch("https://expivi.net/api/catalogue", {
                         headers: { Authorization: `Bearer ${cfg.token}` }
                     }).then(res => res.ok ? res.json() : { data: [] })
                 ]);
+                const screenshot = await this.takeScreenshot();
 
                 const modelAttrs = catalogJson.data?.find(item => item.id == id)?.attributes ?? {};
                 const modelName = modelAttrs.name ?? "";
