@@ -33,6 +33,33 @@ window.DestagData = (() => {
 
     return {
         /**
+         * Screenshot of the grave for the PDF (1200 x 1200 JPEG).
+         * Expivi's default screenshot camera frames the whole scene (frameScene),
+         * which currently renders the grave tiny and from far away. Rendering from
+         * the pose of the scene camera gives the usual, filling view. Falls back to
+         * the default screenshot if the camera cannot be read.
+         * @returns {Promise<string>} Image data URL.
+         */
+        async takeScreenshot() {
+            try {
+                const cam = await window.expivi.getActiveCamera();
+                const position = [cam?.position_x, cam?.position_y, cam?.position_z].map(Number);
+                const quaternion = [cam?.quaternion_x, cam?.quaternion_y, cam?.quaternion_z, cam?.quaternion_w].map(Number);
+
+                if ([...position, ...quaternion].every(Number.isFinite)) {
+                    const shot = await window.expivi.getScreenshot(
+                        1200, 1200, 'CUSTOM_CAMERA_POSITION', 'image/jpeg', { position, quaternion }
+                    );
+                    if (typeof shot === 'string' && shot.startsWith('data:image/')) return shot;
+                }
+            } catch (err) {
+                console.warn('Screenshot aus der Kameraposition nicht möglich:', err);
+            }
+
+            return window.expivi.getScreenshot(1200, 1200);
+        },
+
+        /**
          * Aggregates all structural and visual 3D asset data concurrently from external APIs.
          * @param {Object} cfg - The shared global application configuration.
          * @param {string} cfg.catalogueId - The catalogue entry ID.
@@ -50,7 +77,7 @@ window.DestagData = (() => {
                     window.expivi.getProductAttributes(),
                     window.expivi.saveConfiguration(),
                     window.expivi.managers.resolveMaterialGroups(),
-                    window.expivi.getScreenshot(1200, 1200),
+                    this.takeScreenshot(),
                     fetch("https://expivi.net/api/catalogue", {
                         headers: { Authorization: `Bearer ${cfg.token}` }
                     }).then(res => res.ok ? res.json() : { data: [] })
