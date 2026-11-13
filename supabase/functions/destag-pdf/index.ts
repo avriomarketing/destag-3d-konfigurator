@@ -6,9 +6,11 @@
 //
 //   POST ?id=<uuid>  Body: PDF-Bytes (nur von Destags Seiten)  ->  {"link": "https://.../destag-pdf?id=<uuid>"}
 //   GET  ?id=<uuid>  ->  das PDF (fuer Destag aus der Typeform-Anfrage heraus)
+//   POST ?aktion=aufraeumen  Header x-aufraeumen-schluessel  ->  {"geloescht": n}
 //
 // Datenschutz: Die UUID ist nicht erratbar. PDFs werden nach AUFBEWAHRUNG_TAGE nicht mehr
-// ausgeliefert und beim naechsten Upload geloescht.
+// ausgeliefert und einmal taeglich vom pg_cron-Job "destag-pdf-aufraeumen" geloescht.
+// Dessen Schluessel liegt im Vault ("destag_pdf_aufraeumen").
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -20,7 +22,8 @@ const ORIGINS = new Set([
 ]);
 const BUCKET = "destag-pdf";
 const MAX_BYTES = 10 * 1024 * 1024;
-const AUFBEWAHRUNG_TAGE = 90;
+const AUFBEWAHRUNG_TAGE = 30;
+const LOESCH_SEITE = 100;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LINK_BASIS = `${Deno.env.get("SUPABASE_URL")}/functions/v1/destag-pdf`;
 
@@ -48,19 +51,44 @@ function grenzeAbgelaufen(): number {
   return Date.now() - AUFBEWAHRUNG_TAGE * 24 * 60 * 60 * 1000;
 }
 
-async function alteLoeschen(): Promise<void> {
-  const { data, error } = await db.storage.from(BUCKET).list("", {
-    limit: 100,
-    sortBy: { column: "created_at", order: "asc" },
-  });
-  if (error || !data) return;
-  const alt = data
-    .filter((f) => f.created_at && Date.parse(f.created_at) < grenzeAbgelaufen())
-    .map((f) => f.name);
-  if (alt.length) {
+// Loescht seitenweise die aeltesten Dateien, bis keine abgelaufene mehr uebrig ist.
+async function alteLoeschen(): Promise<number> {
+  let geloescht = 0;
+  while (true) {
+    const { data, error } = await db.storage.from(BUCKET).list("", {
+      limit: LOESCH_SEITE,
+      sortBy: { column: "created_at", order: "asc" },
+    });
+    if (error || !data) {
+      if (error) console.error("Aufraeumen: Liste nicht lesbar:", error.message);
+      return geloescht;
+    }
+    const alt = data
+      .filter((f) => f.created_at && Date.parse(f.created_at) < grenzeAbgelaufen())
+      .map((f) => f.name);
+    if (!alt.length) return geloescht;
     const { error: e } = await db.storage.from(BUCKET).remove(alt);
-    if (e) console.error("Aufraeumen fehlgeschlagen:", e.message);
+    if (e) {
+      console.error("Aufraeumen fehlgeschlagen:", e.message);
+      return geloescht;
+    }
+    geloescht += alt.length;
+    if (alt.length < data.length || data.length < LOESCH_SEITE) return geloescht;
   }
+}
+
+async function aufraeumen(req: Request): Promise<Response> {
+  const { data: schluessel, error } = await db.rpc("get_service_secret", {
+    secret_name: "destag_pdf_aufraeumen",
+  });
+  if (error || typeof schluessel !== "string" || !schluessel) {
+    console.error("Aufraeum-Schluessel nicht lesbar:", error?.message);
+    return json(500, { error: "nicht_eingerichtet" }, null);
+  }
+  if (req.headers.get("x-aufraeumen-schluessel") !== schluessel) {
+    return json(403, { error: "nicht_erlaubt" }, null);
+  }
+  return json(200, { geloescht: await alteLoeschen() }, null);
 }
 
 async function hochladen(req: Request, id: string, origin: string): Promise<Response> {
@@ -83,7 +111,6 @@ async function hochladen(req: Request, id: string, origin: string): Promise<Resp
     return json(vorhanden ? 409 : 500, { error: vorhanden ? "id_vergeben" : "upload_fehler" }, origin);
   }
 
-  EdgeRuntime.waitUntil(alteLoeschen());
   return json(201, { link: `${LINK_BASIS}?id=${id}` }, origin);
 }
 
@@ -111,8 +138,10 @@ async function ausliefern(id: string): Promise<Response> {
 
 Deno.serve(async (req: Request) => {
   const origin = req.headers.get("Origin");
-  const id = new URL(req.url).searchParams.get("id") ?? "";
+  const parameter = new URL(req.url).searchParams;
+  const id = parameter.get("id") ?? "";
 
+  if (req.method === "POST" && parameter.get("aktion") === "aufraeumen") return aufraeumen(req);
   if (req.method === "GET") {
     return UUID_REGEX.test(id) ? ausliefern(id) : text(404, "Dieses PDF wurde nicht gefunden.");
   }
