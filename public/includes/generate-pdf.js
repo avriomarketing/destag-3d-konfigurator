@@ -1,28 +1,33 @@
 const MM2PT = 2.83465;
-const INVALID_VALUES = new Set(["null", "false", "leer", "test", "temp-delete", "hidden_text", "Disabled", "Inschrift"]);
-const CLEANUP_REGEX = /@size:(1|0\.75)|@font:(Josefin Sans|Newsreader|Charm)|\.00|;/g;
-const SYSTEM_ID_REGEX = /^\d{5,}$/;
-
-const NAME_REPLACEMENTS = {
-    "Material Grabstein (Position #1)": "Material Grabstein (primär)",
-    "Material Grabstein (Position #2)": "Material Grabstein (sekundär)"
-};
-
-const ATTRIBUTE_ORDER = [
-    "Grabstein", "Material Grabstein (primär)", "Material Grabstein (sekundär)",
-    "Form der Abdeckung", "Abdeckplatte (Position 1)", "Abdeckplatte (Position 2)",
-    "Material der Einfassung", "Grabschmuck", "Material der Inschrift (Vorname)",
-    "Inschrift Vorname", "Material der Inschrift (Nachname)", "Inschrift Nachname",
-    "Material der Inschrift (Geburtsdatum)", "Inschrift Geburtsdatum",
-    "Material der Inschrift (Sterbedatum)", "Inschrift Sterbedatum"
-];
-
-const ORDER_MAP = new Map(ATTRIBUTE_ORDER.map((key, i) => [key, i]));
 
 /**
  * Destag PDF Generation and Utility Service.
+ * Needs includes/data.js (DestagData.pdfLines) and, for build(), pdf-lib (window.PDFLib).
  */
 window.DestagPDF = {
+    templates: new Map(),
+
+    /**
+     * Fetches the PDF template once per URL. A failed fetch is forgotten, so the
+     * next call tries again.
+     * @param {string} cdnBaseUrl - The release folder of the configurator.
+     * @returns {Promise<ArrayBuffer>} The template bytes.
+     */
+    loadTemplate(cdnBaseUrl) {
+        const url = `${cdnBaseUrl}assets/pdftemplate.pdf`;
+
+        if (!this.templates.has(url)) {
+            const request = fetch(url).then(response => {
+                if (!response.ok) throw new Error(`PDF-Vorlage nicht geladen (HTTP ${response.status})`);
+                return response.arrayBuffer();
+            });
+            request.catch(() => this.templates.delete(url));
+            this.templates.set(url, request);
+        }
+
+        return this.templates.get(url);
+    },
+
     /**
      * Builds the structural configuration PDF.
      * @param {Object} data - The internal configuration and asset state object.
@@ -32,10 +37,9 @@ window.DestagPDF = {
     async build(data, shortUrl = "") {
         const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
 
-        const response = await fetch(`${data.cdnBaseUrl}assets/pdftemplate.pdf`);
-        const templateBytes = await response.arrayBuffer();
+        const templateBytes = await this.loadTemplate(data.cdnBaseUrl);
 
-        const pdfDoc = await PDFDocument.load(templateBytes);
+        const pdfDoc = await PDFDocument.load(templateBytes.slice(0));
         const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
         const firstPage = pdfDoc.getPages()[0];
@@ -57,55 +61,10 @@ window.DestagPDF = {
         drawText(firstPage, shortUrl || `${data.appBaseUrl}?p=${data.catalogueId}`, 11, 189);
         drawImg(firstPage, img, 97.5, 16, 90, 90);
 
-        const attrs = [];
-
-        for (const attr of data.attributes) {
-            let { name, id, selected_value_id, attribute_values, value } = attr;
-            if (!name) continue;
-
-            for (const [search, replacement] of Object.entries(NAME_REPLACEMENTS)) {
-                name = name.replace(search, replacement);
-            }
-
-            let val = data.configAttrMap.get(id)?.attribute_value_name ||
-                attribute_values?.find(v => v.id === selected_value_id)?.name ||
-                data.activeMaterials[id] ||
-                data.activeMaterials[name] ||
-                data.configAttrMap.get(id)?.attribute_value?.value ||
-                value;
-
-            if (typeof val === 'string') {
-                val = val.replace(CLEANUP_REGEX, "").trim();
-                if (val.includes("text-silver")) val = "Silber";
-                if (val.includes("text-bronze")) val = "Bronze";
-            }
-
-            if (SYSTEM_ID_REGEX.test(String(val))) continue;
-            if ((val === "Bronze" || val === "Silber") && !name.startsWith("Material")) continue;
-            if (!val || INVALID_VALUES.has(String(val)) || INVALID_VALUES.has(name)) continue;
-
-            attrs.push({ name, val });
-        }
-
-        const getRank = name => {
-            for (const [key, index] of ORDER_MAP) {
-                if (name.startsWith(key)) return index;
-            }
-            return 999;
-        };
-
-        attrs.sort((a, b) => getRank(a.name) - getRank(b.name));
-
         let attrY = 125;
-        const printed = new Set();
-
-        for (const { name, val } of attrs) {
-            const line = `${name}: ${val}`;
-            if (!printed.has(line)) {
-                drawText(firstPage, line, 88, attrY);
-                printed.add(line);
-                attrY += 5.5;
-            }
+        for (const line of window.DestagData.pdfLines(data)) {
+            drawText(firstPage, line, 88, attrY);
+            attrY += 5.5;
         }
 
         drawImg(secondPage, img, 31, 33.5, 154, 154);

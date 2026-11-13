@@ -3,13 +3,28 @@
  * includes and assets are loaded from the same release as app.js itself.
  */
 const SCRIPT_BASE_URL = document.currentScript?.src?.replace(/[^/]*$/, '')
-    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.8/public/';
+    || 'https://cdn.jsdelivr.net/gh/avriomarketing/destag-3d-konfigurator@v1.0.9/public/';
 
 /** Edge Functions im Supabase-Projekt avrio-services. */
 const SHORTLINK_URL = 'https://sxaflpiqtgwfzkybmwzn.supabase.co/functions/v1/destag-shortlink';
 const PDF_SERVICE_URL = 'https://sxaflpiqtgwfzkybmwzn.supabase.co/functions/v1/destag-pdf';
 
 const LINK_PLACEHOLDER = 'Link wird generiert...';
+
+/**
+ * How long the redirect after the Typeform submit waits for the PDF upload.
+ * If the PDF is still missing then, the PDF service builds a replacement PDF
+ * from the data packet sent on click.
+ */
+const PDF_WAIT_MS = 12000;
+
+/** Messages the Typeform embed uses to redirect the page after the submit. */
+const TYPEFORM_REDIRECT_TYPES = new Set(['redirect-after-submit', 'thank-you-screen-redirect']);
+
+/** Upper limit for keepalive requests (browsers allow 64 KiB in flight). */
+const KEEPALIVE_MAX_BYTES = 60000;
+
+const SUBMIT_NOTICE_TEXT = 'Ihre Konfiguration wird übermittelt …';
 
 /**
  * Resolves with the given promise, or after `ms` at the latest, so that a
@@ -54,6 +69,12 @@ class WebflowApp {
         };
 
         this.cfg.customCssUrl = config.customCssUrl ?? `${this.cfg.cdnBaseUrl}app.css`;
+
+        /** Script loads started by loadJS, one promise per src. */
+        this.scriptLoads = new Map();
+        /** The PDF of the currently open request: { id, step, start, done, submitted, result }. */
+        this.pdfJob = null;
+        this.redirecting = false;
 
         this.createAndInjectLoader();
     }
@@ -172,7 +193,9 @@ class WebflowApp {
      */
     injectGlobalStyles() {
         const style = document.createElement('style');
-        style.textContent = '[data-form-id] iframe { width: 100% !important; height: 100% !important; min-height: 100% !important; }';
+        style.textContent = '[data-form-id] iframe { width: 100% !important; height: 100% !important; min-height: 100% !important; }'
+            + ' .destag-submit-notice { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center;'
+            + ' padding: 1.5rem; text-align: center; background: rgba(255, 255, 255, 0.94); color: #1a1a1a; font: inherit; }';
         document.head.appendChild(style);
     }
 
@@ -352,15 +375,92 @@ class WebflowApp {
     }
 
     /**
-     * Helper mapping for dynamic asynchronous script registration.
+     * Loads a script once. Every caller gets the same promise, which only resolves
+     * after the script has run, so a second click while a script is still loading
+     * waits for it. A failed load removes its tag and is forgotten, so it can be
+     * tried again. Script tags that were already in the page count as loaded.
      * @param {string} src - Absolute script url.
      * @returns {Promise<void>}
      */
     loadJS(src) {
-        return new Promise((res, rej) => {
-            if (document.querySelector(`script[src="${src}"]`)) return res();
-            document.head.append(Object.assign(document.createElement('script'), { src, onload: res, onerror: rej }));
+        if (this.scriptLoads.has(src)) return this.scriptLoads.get(src);
+        if (document.querySelector(`script[src="${src}"]`)) return Promise.resolve();
+
+        const load = new Promise((res, rej) => {
+            const script = document.createElement('script');
+            script.src = src;
+            script.onload = () => res();
+            script.onerror = () => {
+                script.remove();
+                this.scriptLoads.delete(src);
+                rej(new Error(`Skript nicht geladen: ${src}`));
+            };
+            document.head.append(script);
         });
+
+        this.scriptLoads.set(src, load);
+        return load;
+    }
+
+    /**
+     * loadJS with further attempts after a short pause (flaky mobile networks).
+     * @param {string} src - Absolute script url.
+     * @param {number} [attempts=2]
+     * @returns {Promise<void>}
+     */
+    async loadJSWithRetry(src, attempts = 2) {
+        for (let attempt = 1; ; attempt++) {
+            try {
+                return await this.loadJS(src);
+            } catch (err) {
+                if (attempt >= attempts) throw err;
+                await new Promise(resolve => setTimeout(resolve, 1500));
+            }
+        }
+    }
+
+    /**
+     * Scripts every feature (link, share, request, PDF) needs.
+     * @returns {Promise<void>}
+     */
+    async loadFeatureScripts() {
+        await Promise.all([
+            this.loadJSWithRetry(`${this.cfg.cdnBaseUrl}includes/data.js`),
+            this.loadJSWithRetry(`${this.cfg.cdnBaseUrl}includes/link-converter.js`)
+        ]);
+    }
+
+    /**
+     * pdf-lib and the PDF builder.
+     * @returns {Promise<void>}
+     */
+    async loadPdfLibs() {
+        await Promise.all([
+            this.loadJSWithRetry(`${this.cfg.cdnBaseUrl}assets/dist/pdf-lib.min.js`),
+            this.loadJSWithRetry(`${this.cfg.cdnBaseUrl}includes/generate-pdf.js`)
+        ]);
+    }
+
+    /**
+     * Loads the request and PDF tools (about 600 KB) in the background once the
+     * scene is up, so that a click on "Modell anfragen" no longer has to wait
+     * for them, above all on mobile connections.
+     */
+    preloadPdfTools() {
+        if (!document.querySelector('[data-form-id]') && !document.getElementById('downloadPDF')) return;
+
+        const start = () => {
+            this.loadFeatureScripts().catch(err => console.warn('Konfigurator-Skripte nicht vorgeladen:', err));
+            this.loadPdfLibs()
+                .then(() => window.DestagPDF.loadTemplate(this.cfg.cdnBaseUrl))
+                .catch(err => console.warn('PDF-Werkzeuge nicht vorgeladen:', err));
+        };
+
+        if ('requestIdleCallback' in window) {
+            window.requestIdleCallback(start, { timeout: 3000 });
+        } else {
+            setTimeout(start, 1000);
+        }
     }
 
     /**
@@ -377,8 +477,12 @@ class WebflowApp {
      * Cascades orchestration maps into localized individual features.
      */
     initCustomFeatures() {
-        this.setupLoaderAndConfigActivation();
+        this.setupLoaderAndConfigActivation()
+            .catch(err => console.warn('Konfiguration nicht vollständig angewendet:', err))
+            .finally(() => this.preloadPdfTools());
         this.setupCenterModel();
+        this.setupTypeformRedirect();
+        this.setupPdfLeaveReport();
         this.setupDynamicTypeforms();
         this.setupWhatsAppShare();
         this.setupMailShare();
@@ -423,14 +527,10 @@ class WebflowApp {
      * @returns {Promise<Object>} Formatted dataset extraction containing asset contexts and paths.
      */
     async getFeatureData(requirePdfLibs = false) {
-        await Promise.all([
-            this.loadJS(`${this.cfg.cdnBaseUrl}includes/data.js`),
-            this.loadJS(`${this.cfg.cdnBaseUrl}includes/link-converter.js`)
-        ]);
+        await this.loadFeatureScripts();
 
         if (requirePdfLibs) {
-            await this.loadJS(`${this.cfg.cdnBaseUrl}assets/dist/pdf-lib.min.js`);
-            await this.loadJS(`${this.cfg.cdnBaseUrl}includes/generate-pdf.js`);
+            await this.loadPdfLibs();
         }
 
         const expiviData = await window.DestagData.fetchAll(this.cfg);
@@ -465,13 +565,18 @@ class WebflowApp {
             hidden: pdfLink ? { config_link: shortUrl, config_pdf: pdfLink } : { config_link: shortUrl },
             width: '100%',
             height: '100%',
-            onReady: () => loaders.forEach(el => { el.style.display = 'none'; })
+            onReady: () => loaders.forEach(el => { el.style.display = 'none'; }),
+            onSubmit: () => {
+                if (this.pdfJob) this.pdfJob.submitted = true;
+            }
         });
     }
 
     /**
-     * Announces a link to the configuration PDF right away and uploads the PDF in the
-     * background, so the Typeform request can carry the link without waiting.
+     * Announces a link to the configuration PDF right away and builds and uploads
+     * the PDF in the background, so the Typeform request can carry the link without
+     * waiting. Also sends a small data packet at once, from which the PDF service
+     * builds a replacement PDF if the real one never arrives.
      * @param {Object} expiviData - Data bundle from getFeatureData.
      * @param {string} shortUrl - The configuration shortlink printed into the PDF.
      * @returns {string} The PDF link, or '' if uploading is not possible.
@@ -480,15 +585,218 @@ class WebflowApp {
         if (!this.cfg.pdfServiceUrl || !window.crypto?.randomUUID) return '';
 
         const id = window.crypto.randomUUID();
-        (async () => {
-            await this.loadJS(`${this.cfg.cdnBaseUrl}assets/dist/pdf-lib.min.js`);
-            await this.loadJS(`${this.cfg.cdnBaseUrl}includes/generate-pdf.js`);
-            const pdfBytes = await window.DestagPDF.build(expiviData, shortUrl);
-            const stored = await window.DestagPDF.upload(pdfBytes, this.cfg.pdfServiceUrl, id);
-            if (!stored) console.error('PDF für die Anfrage konnte nicht gespeichert werden.');
-        })().catch(err => console.error('PDF für die Anfrage fehlgeschlagen:', err));
+        const job = { id, step: 'laden', start: Date.now(), done: false, submitted: false };
+        this.pdfJob = job;
+
+        this.sendPdfData(id, expiviData, shortUrl);
+
+        job.result = (async () => {
+            try {
+                await this.loadPdfLibs();
+
+                job.step = 'bauen';
+                let pdfBytes;
+                try {
+                    pdfBytes = await window.DestagPDF.build(expiviData, shortUrl);
+                } catch (err) {
+                    console.warn('PDF-Erstellung, zweiter Versuch:', err);
+                    pdfBytes = await window.DestagPDF.build(expiviData, shortUrl);
+                }
+
+                job.step = 'hochladen';
+                if (!await window.DestagPDF.upload(pdfBytes, this.cfg.pdfServiceUrl, id)) {
+                    throw new Error('Upload fehlgeschlagen');
+                }
+
+                job.step = 'fertig';
+                return true;
+            } catch (err) {
+                console.error('PDF für die Anfrage fehlgeschlagen:', err);
+                this.reportPdfProblem(job, err);
+                return false;
+            } finally {
+                job.done = true;
+            }
+        })();
 
         return `${this.cfg.pdfServiceUrl}?id=${id}`;
+    }
+
+    /**
+     * Sends the data the PDF service needs for a replacement PDF: model, size,
+     * link, the "Ihre Auswahl" lines and a small preview image. Kept below the
+     * keepalive limit, so it still arrives if the page is left right away.
+     * @param {string} id - The PDF id.
+     * @param {Object} expiviData - Data bundle from getFeatureData.
+     * @param {string} shortUrl - The configuration shortlink.
+     * @returns {Promise<void>}
+     */
+    async sendPdfData(id, expiviData, shortUrl) {
+        try {
+            const packet = {
+                zeit: new Intl.DateTimeFormat('de-DE', { dateStyle: 'short', timeStyle: 'short' }).format(new Date()),
+                modell: expiviData.modelName ?? '',
+                groesse: expiviData.modelSize ?? '',
+                link: shortUrl || `${expiviData.appBaseUrl}?p=${expiviData.catalogueId}`,
+                zeilen: window.DestagData.pdfLines(expiviData),
+                vorlage: `${this.cfg.cdnBaseUrl}assets/pdftemplate.pdf`
+            };
+
+            let body = JSON.stringify(packet);
+            for (const size of [480, 320]) {
+                const image = await this.shrinkScreenshot(expiviData.screenshot, size);
+                if (!image) break;
+                const withImage = JSON.stringify({ ...packet, bild: image });
+                if (new Blob([withImage]).size <= KEEPALIVE_MAX_BYTES) {
+                    body = withImage;
+                    break;
+                }
+            }
+
+            const response = await fetch(`${this.cfg.pdfServiceUrl}?aktion=daten&id=${encodeURIComponent(id)}`, {
+                method: 'POST',
+                body,
+                keepalive: new Blob([body]).size <= KEEPALIVE_MAX_BYTES
+            });
+            if (!response.ok && response.status !== 409) throw new Error(`Datenpaket HTTP ${response.status}`);
+        } catch (err) {
+            console.warn('Daten für das Ersatz-PDF nicht gesendet:', err);
+            this.reportPdfProblem({ id, step: 'daten', start: Date.now() }, err);
+        }
+    }
+
+    /**
+     * Scales the screenshot down to a small JPEG for the data packet.
+     * @param {string} dataUrl - Screenshot from Expivi.
+     * @param {number} size - Longest side in pixels.
+     * @returns {Promise<string>} JPEG data URL, or '' if not possible.
+     */
+    async shrinkScreenshot(dataUrl, size) {
+        try {
+            if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) return '';
+
+            const img = new Image();
+            img.src = dataUrl;
+            await img.decode();
+
+            const scale = Math.min(1, size / Math.max(img.naturalWidth, img.naturalHeight));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+            canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+            return canvas.toDataURL('image/jpeg', 0.7);
+        } catch (err) {
+            console.warn('Vorschaubild nicht verkleinert:', err);
+            return '';
+        }
+    }
+
+    /**
+     * Reports a PDF problem to the PDF service (shows up in its function log),
+     * so failures on visitors' devices become visible. Diagnostics only: never
+     * throws and never blocks.
+     * @param {Object} job - { id, step, start, submitted }.
+     * @param {*} problem - Error or text.
+     * @param {boolean} [viaBeacon=false] - Use sendBeacon (page is being left).
+     */
+    reportPdfProblem(job, problem, viaBeacon = false) {
+        try {
+            const body = JSON.stringify({
+                schritt: job.step,
+                meldung: String(problem?.message ?? problem).slice(0, 300),
+                sekunden: Math.round((Date.now() - job.start) / 1000),
+                abgeschickt: !!job.submitted,
+                browser: navigator.userAgent,
+                seite: window.location.pathname
+            });
+            const url = `${this.cfg.pdfServiceUrl}?aktion=fehler&id=${encodeURIComponent(job.id)}`;
+
+            if (viaBeacon && navigator.sendBeacon?.(url, body)) return;
+            fetch(url, { method: 'POST', body, keepalive: true }).catch(() => {});
+        } catch {
+            // Nur Diagnose.
+        }
+    }
+
+    /**
+     * Reports when the page is left while the PDF of the open request is not
+     * stored yet (e.g. tab closed or app switched right after the submit).
+     */
+    setupPdfLeaveReport() {
+        window.addEventListener('pagehide', () => {
+            const job = this.pdfJob;
+            if (!job || job.done) return;
+            this.reportPdfProblem(job, 'Seite verlassen, bevor das PDF gespeichert war', true);
+        });
+    }
+
+    /**
+     * Takes over the redirect after the Typeform submit (target set in Typeform,
+     * e.g. /danke): waits until the PDF of the request is stored, at most
+     * PDF_WAIT_MS, and then redirects. Without this the redirect cancels a PDF
+     * that is still being built or uploaded. If the embed changes its messages,
+     * the listener simply does not match and Typeform redirects as before.
+     */
+    setupTypeformRedirect() {
+        window.addEventListener('message', (event) => {
+            const data = event.data;
+            if (!data || typeof data !== 'object' || !TYPEFORM_REDIRECT_TYPES.has(data.type) || !data.url) return;
+            if (data.target && !['_parent', '_top'].includes(data.target)) return;
+
+            let fromTypeform = false;
+            try {
+                fromTypeform = /(^|\.)typeform\.com$/.test(new URL(event.origin).hostname);
+            } catch {
+                fromTypeform = false;
+            }
+            if (!fromTypeform) return;
+
+            // Capture phase on window: runs before the embed's own listener.
+            event.stopImmediatePropagation();
+            this.redirectAfterPdf(data.url);
+        }, true);
+    }
+
+    /**
+     * Redirects once the PDF of the open request is done (stored or given up),
+     * at most after PDF_WAIT_MS. Shows a short notice over the form meanwhile.
+     * @param {string} url - Redirect target from Typeform.
+     * @returns {Promise<void>}
+     */
+    async redirectAfterPdf(url) {
+        if (this.redirecting) return;
+        this.redirecting = true;
+
+        const job = this.pdfJob;
+        if (job && !job.done) {
+            this.showSubmitNotice();
+            await withTimeout(job.result, PDF_WAIT_MS);
+        }
+
+        window.location.href = url;
+    }
+
+    /**
+     * Covers the Typeform with a short notice while the PDF is being finished.
+     */
+    showSubmitNotice() {
+        const container = document.querySelector('[data-form-id]');
+        if (!container || container.querySelector('.destag-submit-notice')) return;
+
+        if (window.getComputedStyle(container).position === 'static') {
+            container.style.position = 'relative';
+        }
+
+        const notice = document.createElement('div');
+        notice.className = 'destag-submit-notice';
+        notice.setAttribute('role', 'status');
+        notice.textContent = SUBMIT_NOTICE_TEXT;
+        container.appendChild(notice);
     }
 
     /**
@@ -506,6 +814,11 @@ class WebflowApp {
             if (!btn) continue;
 
             btn.addEventListener('click', async () => {
+                // A second tap while the form is being prepared would start a second
+                // PDF under a new id; the modal still opens through its own handler.
+                if (btn.dataset.formBusy) return;
+                btn.dataset.formBusy = '1';
+
                 const originalTxt = btn.innerText;
                 btn.innerText = 'Wird generiert...';
 
@@ -517,6 +830,7 @@ class WebflowApp {
                     console.error('Typeform initialization failed:', err);
                 } finally {
                     btn.innerText = originalTxt;
+                    delete btn.dataset.formBusy;
                 }
             });
         }
